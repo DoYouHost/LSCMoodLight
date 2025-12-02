@@ -40,6 +40,7 @@ logger:
   level: DEBUG
   logs:
     light: INFO
+    sensor: INFO
 
 wifi:
   reboot_timeout: 15min
@@ -59,6 +60,9 @@ api:
 ota:
   - platform: esphome
     password: "${OTA_PASSWORD}"
+    on_begin:
+      then:
+        - light.turn_off: moodlight_light
 
 binary_sensor:
   - platform: gpio
@@ -71,10 +75,55 @@ binary_sensor:
     filters:
       - delayed_on: 10ms
       - delayed_off: 10ms
+    on_press:
+      then:
+        - lambda: |-
+            static int effect_idx = 0;
+            static bool saved = false;
+            static float prev_r = 0.0f, prev_g = 0.0f, prev_b = 0.0f, prev_w = 0.0f, prev_brightness = 0.75f;
+            static bool prev_on = false;
+            auto &rv = id(moodlight_light).remote_values;
+            int next = (effect_idx + 1) % 4;
+            if (effect_idx == 0 && next != 0 && !saved) {
+              prev_on = rv.is_on();
+              prev_r = rv.get_red();
+              prev_g = rv.get_green();
+              prev_b = rv.get_blue();
+              prev_w = rv.get_white();
+              prev_brightness = rv.get_brightness();
+              saved = true;
+            }
+            if (next == 0) {
+              saved = false;
+              if (!prev_on) {
+                id(moodlight_light).turn_off().perform();
+              } else {
+                auto call = id(moodlight_light).turn_on();
+                call.set_transition_length(200);
+                call.set_effect("None");
+                call.set_rgb(prev_r, prev_g, prev_b);
+                call.set_white(prev_w);
+                call.set_brightness(prev_brightness);
+                call.perform();
+              }
+            } else if (next == 1) {
+              auto call = id(moodlight_light).turn_on();
+              call.set_effect("Rainbow Cycle");
+              call.perform();
+            } else if (next == 2) {
+              auto call = id(moodlight_light).turn_on();
+              call.set_effect("Police Light");
+              call.perform();
+            } else if (next == 3) {
+              auto call = id(moodlight_light).turn_on();
+              call.set_effect("Fireplace");
+              call.perform();
+            }
+            effect_idx = next;
 
   - platform: gpio
-    name: "Rainbow Button"
-    id: btn_rainbow
+    name: "Music Button"
+    id: btn_music
     pin:
       number: P9
       mode: INPUT_PULLUP
@@ -85,36 +134,17 @@ binary_sensor:
     on_press:
       then:
         - lambda: |-
-            static bool rainbow_active = false;
-            static float prev_r = 0.0f, prev_g = 0.0f, prev_b = 0.0f, prev_w = 0.0f, prev_brightness = 0.75f;
-            static bool prev_on = false;
-            auto &rv = id(moodlight_light).remote_values;
-            if (!rainbow_active) {
-              prev_on = rv.is_on();
-              prev_r = rv.get_red();
-              prev_g = rv.get_green();
-              prev_b = rv.get_blue();
-              prev_w = rv.get_white();
-              prev_brightness = rv.get_brightness();
+            static bool sound_reactive = false;
+            if (!sound_reactive) {
               auto call = id(moodlight_light).turn_on();
-              call.set_effect("Rainbow Cycle");
+              call.set_effect("Sound Reactive");
               call.perform();
-              rainbow_active = true;
+              sound_reactive = true;
             } else {
-              rainbow_active = false;
-              if (!prev_on) {
-                auto off = id(moodlight_light).turn_off();
-                off.perform();
-              } else {
-                auto call = id(moodlight_light).turn_on();
-                call.set_effect("None");
-                call.set_brightness(prev_brightness);
-                call.set_rgb(prev_r, prev_g, prev_b);
-                call.set_white(prev_w);
-                call.perform();
-              }
+              sound_reactive = false;
+              id(moodlight_light).turn_off().perform();
             }
-
+  
   - platform: gpio
     name: "On/Off Button"
     id: btn_on_off
@@ -147,7 +177,7 @@ output:
     pin: P6
     inverted: false
     zero_means_zero: true
-    min_power: 0.05
+    min_power: 0.00
     max_power: 1.00
 
   - platform: libretiny_pwm
@@ -155,7 +185,7 @@ output:
     pin: P7
     inverted: false
     zero_means_zero: true
-    min_power: 0.05
+    min_power: 0.00
     max_power: 1.00
 
   - platform: libretiny_pwm
@@ -163,7 +193,7 @@ output:
     pin: P24
     inverted: false
     zero_means_zero: true
-    min_power: 0.05
+    min_power: 0.00
     max_power: 1.00
 
   - platform: libretiny_pwm
@@ -171,7 +201,7 @@ output:
     pin: P26
     inverted: false
     zero_means_zero: true
-    min_power: 0.08
+    min_power: 0.00
     max_power: 1.00
 
 light:
@@ -183,11 +213,12 @@ light:
     blue: blue_pwm
     white: white_pwm
     default_transition_length: 1s
+    restore_mode: RESTORE_DEFAULT_OFF
 
     effects:
       - lambda:
           name: "Rainbow Cycle"
-          update_interval: 50ms
+          update_interval: 33ms
           lambda: |-
             static uint32_t start = esphome::millis();
             uint32_t now = esphome::millis();
@@ -196,7 +227,7 @@ light:
             if (cycle_s > 300.0f) cycle_s = 300.0f;
             uint32_t cycle = (uint32_t)(cycle_s * 1000.0f);
             uint32_t elapsed = (now - start) % cycle;
-            float h = (float) elapsed / (float) cycle; // 0..1
+            float h = (float) elapsed / (float) cycle;
             float r, g, b;
             float i = floorf(h * 6.0f);
             float f = h * 6.0f - i;
@@ -215,6 +246,101 @@ light:
             call.set_white(0.0f);
             call.perform();
 
+      - lambda:
+          name: "Police Light"
+          update_interval: 50ms
+          lambda: |-
+            static uint8_t step = 0;
+            auto call = id(moodlight_light).turn_on();
+            call.set_transition_length(0);
+            if (step == 0 || step == 2) {
+              call.set_rgb(0.0f, 0.0f, 1.0f);
+              call.set_white(0.0f);
+              call.perform();
+            } else if (step == 5 || step == 7) {
+              call.set_rgb(1.0f, 0.0f, 0.0f);
+              call.set_white(0.0f);
+              call.perform();
+            } else {
+              id(white_pwm).set_level(0.0f);
+              id(red_pwm).set_level(0.0f);
+              id(green_pwm).set_level(0.0f);
+              id(blue_pwm).set_level(0.0f);
+            }
+            step = (step + 1) % 10;
+
+      - lambda:
+          name: "Fireplace"
+          update_interval: 120ms
+          lambda: |-
+            static uint32_t lfsr1 = 123456789u;
+            static uint32_t lfsr2 = 362436069u;
+            lfsr1 = lfsr1 * 1664525u + 1013904223u;
+            lfsr2 = lfsr2 * 1103515245u + 12345u;
+            float noise_fast = ((lfsr1 >> 16) & 0xFFFF) / 65535.0f;
+            float noise_slow = ((lfsr2 >> 16) & 0xFFFF) / 65535.0f;
+            static float fast = 0.0f;
+            static float slow = 0.0f;
+            fast = fast * 0.75f + noise_fast * 0.25f;
+            slow = slow * 0.94f + noise_slow * 0.06f;
+            float flick = 0.75f * slow + 0.25f * fast;
+            float brightness = 0.35f + 0.50f * flick;
+            float r_base = 1.0f;
+            float g_base = 0.06f + 0.08f * flick;
+            if (g_base > 0.18f) g_base = 0.18f;
+            float b_base = 0.0f;
+            float r = r_base * brightness;
+            float g = g_base * brightness;
+            float b = b_base * brightness;
+            float w = 0.001f;
+            float user_brightness = id(moodlight_light).remote_values.get_brightness();
+            float r_final = r * user_brightness;
+            float g_final = g * user_brightness;
+            float b_final = b * user_brightness;
+            float w_final = w * user_brightness;
+            id(red_pwm).set_level(r_final);
+            id(green_pwm).set_level(g_final);
+            id(blue_pwm).set_level(b_final);
+            id(white_pwm).set_level(w_final);
+
+      - lambda:
+          name: "Sound Reactive"
+          update_interval: 50ms
+          lambda: |-
+            static uint32_t start_time = esphome::millis();
+            uint32_t now = esphome::millis();
+            float current_level = id(mic_adc).state;
+            float max_level = id(mic_adc_max).state;
+            float response = 0.0f;
+            if (max_level >= 4.0f) {
+              float mic_level = (current_level / max_level);
+              mic_level = mic_level > 0.45f ? mic_level : 0.0f;
+              if (mic_level > 1.0f) mic_level = 1.0f;
+              response = mic_level * mic_level;
+            }
+            float chase_hue = fmodf((now - start_time) / 20000.0f, 1.0f);
+            float hue = fmodf(chase_hue + 0.15f * response, 1.0f);
+            float r, g, b;
+            float i = floorf(hue * 6.0f);
+            float f = hue * 6.0f - i;
+            float q = 1.0f - f;
+            switch ((int)i % 6) {
+              case 0: r = 1.0f; g = f; b = 0.0f; break;
+              case 1: r = q; g = 1.0f; b = 0.0f; break;
+              case 2: r = 0.0f; g = 1.0f; b = f; break;
+              case 3: r = 0.0f; g = q; b = 1.0f; break;
+              case 4: r = f; g = 0.0f; b = 1.0f; break;
+              case 5: r = 1.0f; g = 0.0f; b = q; break;
+              default: r = 1.0f; g = 0.0f; b = 0.0f;
+            }
+            float brightness = (max_level >= 4.0f) ? (0.3f + 0.6f * response) : 0.5f;
+            float white_pulse = (max_level >= 4.0f && response > 0.8f) ? (0.1f * response) : 0.01f;
+            auto call = id(moodlight_light).turn_on();
+            call.set_transition_length(0);
+            call.set_rgb(r * brightness, g * brightness, b * brightness);
+            call.set_white(white_pulse);
+            call.perform();
+
 number:
   - platform: template
     name: "Rainbow Cycle Duration"
@@ -224,5 +350,35 @@ number:
     max_value: 120
     step: 5
     unit_of_measurement: "s"
-    initial_value: 30
-            
+    initial_value: 60
+    restore_value: true
+
+sensor:
+  - platform: adc
+    pin: P23
+    id: mic_adc
+    internal: true
+    update_interval: 50ms
+    samples: 4
+    sampling_mode: max
+    raw: true
+    filters:
+      - calibrate_linear:
+          - 0 -> 0.0
+          - 636 -> 100.0
+      - clamp:
+          min_value: 0.0
+          max_value: 100.0
+          ignore_out_of_range: false
+  
+  - platform: copy
+    source_id: mic_adc
+    id: mic_adc_max
+    filters:
+      - max:
+          window_size: 12
+          send_every: 3
+      - exponential_moving_average:
+          alpha: 0.2
+          send_every: 1
+      
