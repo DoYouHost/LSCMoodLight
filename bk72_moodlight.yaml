@@ -1,0 +1,228 @@
+---
+substitutions:
+  API_KEY: "cYLmor7J+H5rQShKbqnIjI1KY0s0+82G15gWjEQ+xQI="
+  OTA_PASSWORD: "F6wfE@Gt!OrLIjlSp0Tg90wr1#*1oCGP"
+  WEB_USERNAME: "esphome"
+  WEB_PASSWORD: "esphome"
+  AP_SSID: "LSC Moodlight"
+  AP_PASSWORD: "esphome-fallback"
+
+esphome:
+  name: bk72_moodlight
+  friendly_name: "LSC Moodlight"
+  comment: "LSC Smart Connect Moodlight based on BK72"
+  name_add_mac_suffix: true
+  project:
+    name: "DoYouHost.LSCMoodLight"
+    version: "dev"
+
+bk72xx:
+  board: generic-bk7231n-qfn32-tuya
+
+dashboard_import:
+  package_import_url: github://DoYouHost/LSCMoodLight/bk72_moodlight.yaml@main
+  import_full_config: false
+
+packages:
+  DoYouHost/ESPHomeTemplates:
+    url: https://github.com/DoYouHost/ESPHomeTemplates
+    files: 
+      - basic.yaml
+      - debug.yaml
+      # - updateBetaProdStaging.yaml
+      # - webServer3.yaml
+      - wifiInfo.yaml
+    ref: main
+    refresh: 0d
+
+logger:
+  baud_rate: 0
+  level: DEBUG
+  logs:
+    light: INFO
+
+wifi:
+  reboot_timeout: 15min
+  # enable_btm: true
+  # enable_rrm: true
+  ap: 
+    ssid: "${AP_SSID}"
+    password: "${AP_PASSWORD}"
+
+captive_portal:
+
+api:
+  reboot_timeout: 15min
+  encryption:
+    key: "${API_KEY}"
+
+ota:
+  - platform: esphome
+    password: "${OTA_PASSWORD}"
+
+binary_sensor:
+  - platform: gpio
+    name: "Mode Button"
+    id: btn_mode
+    pin:
+      number: P8
+      mode: INPUT_PULLUP
+      inverted: true
+    filters:
+      - delayed_on: 10ms
+      - delayed_off: 10ms
+
+  - platform: gpio
+    name: "Rainbow Button"
+    id: btn_rainbow
+    pin:
+      number: P9
+      mode: INPUT_PULLUP
+      inverted: true
+    filters:
+      - delayed_on: 10ms
+      - delayed_off: 10ms
+    on_press:
+      then:
+        - lambda: |-
+            static bool rainbow_active = false;
+            static float prev_r = 0.0f, prev_g = 0.0f, prev_b = 0.0f, prev_w = 0.0f, prev_brightness = 0.75f;
+            static bool prev_on = false;
+            auto &rv = id(moodlight_light).remote_values;
+            if (!rainbow_active) {
+              prev_on = rv.is_on();
+              prev_r = rv.get_red();
+              prev_g = rv.get_green();
+              prev_b = rv.get_blue();
+              prev_w = rv.get_white();
+              prev_brightness = rv.get_brightness();
+              auto call = id(moodlight_light).turn_on();
+              call.set_effect("Rainbow Cycle");
+              call.perform();
+              rainbow_active = true;
+            } else {
+              rainbow_active = false;
+              if (!prev_on) {
+                auto off = id(moodlight_light).turn_off();
+                off.perform();
+              } else {
+                auto call = id(moodlight_light).turn_on();
+                call.set_effect("None");
+                call.set_brightness(prev_brightness);
+                call.set_rgb(prev_r, prev_g, prev_b);
+                call.set_white(prev_w);
+                call.perform();
+              }
+            }
+
+  - platform: gpio
+    name: "On/Off Button"
+    id: btn_on_off
+    pin:
+      number: P14
+      mode: INPUT_PULLUP
+      inverted: true
+    filters:
+      - delayed_on: 10ms
+      - delayed_off: 10ms
+    on_press:
+      then:
+        - lambda: |-
+            auto &rv = id(moodlight_light).remote_values;
+            if (rv.is_on()) {
+              auto off = id(moodlight_light).turn_off();
+              off.perform();
+            } else {
+              auto call = id(moodlight_light).turn_on();
+              call.set_transition_length(200);
+              call.set_rgb(1.0f, 0.7f, 0.5f);
+              call.set_white(0.75f);
+              call.set_brightness(0.75f);
+              call.perform();
+            }
+
+output:
+  - platform: libretiny_pwm
+    id: red_pwm
+    pin: P6
+    inverted: false
+    zero_means_zero: true
+    min_power: 0.05
+    max_power: 1.00
+
+  - platform: libretiny_pwm
+    id: green_pwm
+    pin: P7
+    inverted: false
+    zero_means_zero: true
+    min_power: 0.05
+    max_power: 1.00
+
+  - platform: libretiny_pwm
+    id: blue_pwm
+    pin: P24
+    inverted: false
+    zero_means_zero: true
+    min_power: 0.05
+    max_power: 1.00
+
+  - platform: libretiny_pwm
+    id: white_pwm
+    pin: P26
+    inverted: false
+    zero_means_zero: true
+    min_power: 0.08
+    max_power: 1.00
+
+light:
+  - platform: rgbw
+    name: "Moodlight"
+    id: moodlight_light
+    red: red_pwm
+    green: green_pwm
+    blue: blue_pwm
+    white: white_pwm
+    default_transition_length: 1s
+
+    effects:
+      - lambda:
+          name: "Rainbow Cycle"
+          update_interval: 50ms
+          lambda: |-
+            static uint32_t start = esphome::millis();
+            uint32_t now = esphome::millis();
+            float cycle_s = id(rainbow_cycle_duration).state;
+            if (cycle_s < 5.0f) cycle_s = 5.0f;
+            if (cycle_s > 300.0f) cycle_s = 300.0f;
+            uint32_t cycle = (uint32_t)(cycle_s * 1000.0f);
+            uint32_t elapsed = (now - start) % cycle;
+            float h = (float) elapsed / (float) cycle; // 0..1
+            float r, g, b;
+            float i = floorf(h * 6.0f);
+            float f = h * 6.0f - i;
+            float q = 1.0f - f;
+            switch ((int) i % 6) {
+              case 0: r = 1; g = f; b = 0; break;
+              case 1: r = q; g = 1; b = 0; break;
+              case 2: r = 0; g = 1; b = f; break;
+              case 3: r = 0; g = q; b = 1; break;
+              case 4: r = f; g = 0; b = 1; break;
+              case 5: r = 1; g = 0; b = q; break;
+            }
+            auto call = id(moodlight_light).turn_on();
+            call.set_transition_length(0);
+            call.set_rgb(r, g, b);
+            call.set_white(0.0f);
+            call.perform();
+
+number:
+  - platform: template
+    name: "Rainbow Cycle Duration"
+    id: rainbow_cycle_duration
+    optimistic: true
+    min_value: 5
+    max_value: 120
+    step: 5
+    unit_of_measurement: "s"
+    initial_value: 30
+            
